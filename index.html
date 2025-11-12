@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<title>Torneo Video - 64 match</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{font-family:Arial,Helvetica,sans-serif;background:#fafafa;margin:0;padding:16px;text-align:center}
+  h1{margin:0 0 8px}
+  .videos{display:flex;justify-content:center;gap:12px;flex-wrap:wrap}
+  video{width:45%;max-width:480px;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,0.12)}
+  .controls{margin-top:12px}
+  button{padding:10px 18px;margin:6px;border-radius:8px;border:0;background:#007bff;color:#fff;font-size:16px;cursor:pointer}
+  button.secondary{background:#28a745}
+  #progress{margin-top:10px;font-weight:600}
+  #final{margin-top:20px}
+</style>
+</head>
+<body>
+  <h1>Torneo Video (64 match)</h1>
+  <div id="info">Gioca: ogni match seleziona il video preferito. Il tuo percorso è privato; i voti vengono registrati per statistiche.</div>
+
+  <div id="roundLabel" style="margin-top:12px;font-weight:700">Round: 1</div>
+
+  <div class="videos" id="matchArea">
+    <video id="vLeft" controls playsinline></video>
+    <video id="vRight" controls playsinline></video>
+  </div>
+
+  <div class="controls">
+    <button id="btnLeft">Vota Sinistra</button>
+    <button id="btnRight">Vota Destra</button>
+    <button id="btnRestart" style="background:#dc3545">Ricomincia torneo</button>
+  </div>
+
+  <div id="progress"></div>
+
+  <div id="final" style="display:none"></div>
+
+<script>
+/* CONFIGURAZIONE: inserisci qui il tuo endpoint Web App (Apps Script) */
+const VOTE_ENDPOINT = "https://script.google.com/macros/s/INSERISCI_IL_TUO_ID/exec";
+
+/* Lista video (128 link .mp4). Qui sotto troverai un array di esempio; SOSTITUISCI con i tuoi Cloudinary/Drive diretti */
+const VIDEO_COUNT = 4;
+const videos = [];
+for(let i=1;i<=VIDEO_COUNT;i++){
+  // placeholder — sostituisci con il link reale per ogni index
+  videos.push(`https://res.cloudinary.com/demo/video/upload/v123456/video${i}.mp4`);
+}
+
+/* --- LOGICA TORNEO LATO CLIENT --- */
+/* struttura: currentVideos = array di video per il round corrente (length power of 2) */
+let currentVideos = [];
+let nextRoundVideos = [];
+let currentPairIndex = 0;
+let roundNumber = 1;
+
+/* userId univoco (puoi chiedere nome/email in seguito) */
+let userId = sessionStorage.getItem("tv_userId");
+if(!userId){
+  userId = "user_" + Date.now() + "_" + Math.floor(Math.random()*10000);
+  sessionStorage.setItem("tv_userId", userId);
+}
+
+/* elementi DOM */
+const vLeft = document.getElementById("vLeft");
+const vRight = document.getElementById("vRight");
+const btnLeft = document.getElementById("btnLeft");
+const btnRight = document.getElementById("btnRight");
+const btnRestart = document.getElementById("btnRestart");
+const progressEl = document.getElementById("progress");
+const roundLabel = document.getElementById("roundLabel");
+const finalEl = document.getElementById("final");
+const matchArea = document.getElementById("matchArea");
+
+/* inizializza il torneo (primo round con tutti i video) */
+function initTournament(){
+  // copia dell'array videos per non modificare l'originale
+  currentVideos = videos.slice();
+  // se il numero non è potenza di 2, tronca o pad con duplicati (qui assumiamo 128)
+  currentPairIndex = 0;
+  roundNumber = 1;
+  nextRoundVideos = [];
+  roundLabel.textContent = "Round: " + roundNumber;
+  finalEl.style.display = "none";
+  matchArea.style.display = "flex";
+  // salva stato
+  saveState();
+  showCurrentPair();
+}
+
+/* mostra la coppia corrente */
+function showCurrentPair(){
+  if(currentVideos.length === 1){
+    // abbiamo il vincitore
+    matchArea.style.display = "none";
+    finalEl.style.display = "block";
+    finalEl.innerHTML = `<h2>🏆 Vincitore: </h2><video src="${currentVideos[0]}" controls autoplay width="640"></video><p>ID utente: ${userId}</p>`;
+    progressEl.textContent = "Fine torneo";
+    clearState(); // opzionale: cancella stato di sessione alla fine
+    return;
+  }
+  const totalPairs = currentVideos.length/2;
+  if(currentPairIndex >= totalPairs){
+    // finito round, promuovi winners
+    currentVideos = nextRoundVideos.slice();
+    nextRoundVideos = [];
+    currentPairIndex = 0;
+    roundNumber++;
+    roundLabel.textContent = "Round: " + roundNumber;
+    saveState();
+    showCurrentPair();
+    return;
+  }
+  const left = currentVideos[currentPairIndex*2];
+  const right = currentVideos[currentPairIndex*2 + 1];
+  vLeft.src = left;
+  vRight.src = right;
+  progressEl.textContent = `Sfida ${currentPairIndex+1} / ${totalPairs} (Round ${roundNumber})`;
+  saveState();
+}
+
+/* invia voto al server (statistiche) */
+async function sendVoteToServer(round, matchIndex, winnerUrl){
+  // matchId string: round-matchIndex (es. 1-12)
+  const matchId = `${round}-${matchIndex+1}`;
+  const payload = { userId, round, matchId, vincitore: winnerUrl };
+  try {
+    const res = await fetch(VOTE_ENDPOINT, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(payload)
+    });
+    // leggi risposta (facoltativo)
+    const reply = await res.json().catch(()=>null);
+    // console.log("server reply", reply);
+  } catch(err) {
+    console.error("Errore invio voto:", err);
+    // NOTA: se vuoi resilienza, salva in localStorage per retry
+  }
+}
+
+/* scelta vincitore */
+async function chooseWinner(winnerUrl){
+  // registra statistiche
+  await sendVoteToServer(roundNumber, currentPairIndex, winnerUrl);
+  // aggiungi al prossimo turno
+  nextRoundVideos.push(winnerUrl);
+  // avanza
+  currentPairIndex++;
+  saveState();
+  showCurrentPair();
+}
+
+/* bottoni */
+btnLeft.addEventListener("click", ()=>chooseWinner(vLeft.src));
+btnRight.addEventListener("click", ()=>chooseWinner(vRight.src));
+btnRestart.addEventListener("click", ()=>{
+  if(confirm("Ricominci il torneo da capo?")){
+    sessionStorage.removeItem("tv_state");
+    initTournament();
+  }
+});
+
+/* Salvataggio stato (sessionStorage) per riprendere se l'utente ricarica */
+function saveState(){
+  const state = {
+    userId, roundNumber, currentPairIndex, currentVideos, nextRoundVideos
+  };
+  sessionStorage.setItem("tv_state", JSON.stringify(state));
+}
+
+/* Carica stato se presente */
+function loadState(){
+  const s = sessionStorage.getItem("tv_state");
+  if(!s) return false;
+  try {
+    const st = JSON.parse(s);
+    // se la lunghezza currentVideos è corretta, riprendi; altrimenti ignora
+    if(st && st.currentVideos && st.currentVideos.length >= 1){
+      userId = st.userId || userId;
+      roundNumber = st.roundNumber || 1;
+      currentPairIndex = st.currentPairIndex || 0;
+      currentVideos = st.currentVideos;
+      nextRoundVideos = st.nextRoundVideos || [];
+      roundLabel.textContent = "Round: " + roundNumber;
+      return true;
+    }
+  } catch(e){ console.warn("load state err", e); }
+  return false;
+}
+
+/* pulisce stato (opzionale) */
+function clearState(){
+  sessionStorage.removeItem("tv_state");
+}
+
+/* Avvio */
+if(!loadState()){
+  initTournament();
+} else {
+  showCurrentPair();
+}
+</script>
+</body>
+</html>
